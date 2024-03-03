@@ -40,6 +40,8 @@ import kotlinx.coroutines.Job
 
 class MainActivity : ComponentActivity() {
     private lateinit var recordingServiceManager: RecordingServiceManager
+    private val recordingService: RecordingService?
+        get() = recordingServiceManager.recordingServiceFlow.value
     private val permissions = arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.FOREGROUND_SERVICE, Manifest.permission.POST_NOTIFICATIONS)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,6 +52,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             WearApp()
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        recordingService?.stopRecording()
+        recordingService?.stopSelf()
     }
 
     @Composable
@@ -122,12 +131,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startRecording(){
-        Log.d("X", "startRecording: " + recordingServiceManager.recordingServiceFlow.value)
-        recordingServiceManager.recordingServiceFlow.value?.startRecording()
+        Log.d("X", "startRecording: $recordingService")
+        recordingService?.startRecording()
     }
 
     private fun stopRecording(){
-        recordingServiceManager.recordingServiceFlow.value?.stopRecording()
+        recordingService?.stopRecording()
     }
 
     @Preview(device = Devices.WEAR_OS_SMALL_ROUND, showSystemUi = true)
