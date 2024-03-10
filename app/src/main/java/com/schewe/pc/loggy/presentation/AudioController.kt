@@ -8,92 +8,90 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import androidx.annotation.RequiresPermission
+import com.google.android.gms.wearable.Asset
+import com.google.android.gms.wearable.DataClient
+import com.google.android.gms.wearable.PutDataMapRequest
+import com.google.android.gms.wearable.PutDataRequest
+import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.OutputStream
 
 
 class AudioController(val context: Context) {
-
     // https://github.com/android/wear-os-samples/blob/main/WearSpeakerSample/wear/src/main/java/com/example/android/wearable/speaker/SoundRecorder.kt
-    suspend fun play(filename: String) {
-        val intSize = AudioTrack.getMinBufferSize(RECORDING_RATE, CHANNELS_OUT, FORMAT)
-
-        val audioTrack = AudioTrack.Builder().setAudioAttributes(
-            AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .setUsage(AudioAttributes.USAGE_MEDIA).build()
-        ).setBufferSizeInBytes(intSize).setAudioFormat(
-            AudioFormat.Builder().setSampleRate(RECORDING_RATE).setChannelMask(CHANNELS_OUT)
-                .setEncoding(FORMAT).build()
-        ).setTransferMode(AudioTrack.MODE_STREAM).build()
-
-        audioTrack.setVolume(AudioTrack.getMaxVolume())
-        audioTrack.play()
-
-        try {
-            withContext(Dispatchers.IO) {
-                context.openFileInput(filename).buffered().use { bufferedInputStream ->
-                    val buffer = ByteArray(intSize * 2)
-                    while (isActive) {
-                        val read = bufferedInputStream.read(buffer, 0, buffer.size)
-                        if (read < 0) break
-                        audioTrack.write(buffer, 0, read)
-                    }
-                }
-            }
-        } finally {
-            audioTrack.release()
-        }
-    }
-
-
-    // https://github.com/android/wear-os-samples/blob/main/WearSpeakerSample/wear/src/main/java/com/example/android/wearable/speaker/SoundRecorder.kt
-    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    @RequiresPermission(allOf = [Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION])
     suspend fun record(filenameCallback: (String) -> Unit) {
         val intSize = AudioRecord.getMinBufferSize(RECORDING_RATE, CHANNEL_IN, FORMAT)
-
         val audioRecord =
             AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.MIC).setAudioFormat(
                 AudioFormat.Builder().setSampleRate(RECORDING_RATE).setChannelMask(CHANNEL_IN)
                     .setEncoding(FORMAT).build()
             ).setBufferSizeInBytes(intSize * 3).build()
 
-        val timestamp = System.currentTimeMillis()
-        val recordingFileName = "loggy_$timestamp.pcm"
+        val dataClient: DataClient = Wearable.getDataClient(context)
 
-        filenameCallback(recordingFileName)
+        var dataChunkFile = File(context.filesDir, generateFileName())
+        // Initialize the fileOutputStream before entering the loop
+        var fileOutputStream: OutputStream? = dataChunkFile.outputStream()
+
+        filenameCallback(dataChunkFile.name)
 
         audioRecord.startRecording()
 
         try {
             withContext(Dispatchers.IO) {
-                context.openFileOutput(recordingFileName, Context.MODE_PRIVATE).buffered()
-                    .use { bufferedOutputStream ->
-                        val buffer = ByteArray(intSize)
-                        while (isActive) {
-                            val read = audioRecord.read(buffer, 0, buffer.size)
-                            bufferedOutputStream.write(buffer, 0, read)
-                        }
+                val buffer = ByteArray(intSize)
+
+                // Loop until coroutine is cancelled
+                while (isActive) {
+                    val read = audioRecord.read(buffer, 0, buffer.size)
+
+                    // Check if adding more data exceeds the maximum size
+                    if (dataChunkFile.length() + read > MAX_FILE_SIZE_BYTES) {
+                        // If it does, close the current file, send it and start a new one
+                        fileOutputStream?.close()
+
+                        sendFileAsAsset(dataChunkFile, dataClient)
+
+                        dataChunkFile = File(context.filesDir, generateFileName())
+                        fileOutputStream = dataChunkFile.outputStream() // open new output stream
+                        filenameCallback(dataChunkFile.name)
                     }
+
+                    // Write audio data to the file
+                    fileOutputStream?.write(buffer, 0, read)
+                }
+
+                // Don't forget to close and send the last piece of data that didn't reach the maximum size
+                fileOutputStream?.close()
+                sendFileAsAsset(dataChunkFile, dataClient)
+
             }
         } finally {
             audioRecord.release()
-            // failed attempt to rename file with duration
-            //      val duration = ((System.currentTimeMillis() - timestamp) / 1000f).roundToInt()
-            //      logd("duration $duration")
-            //      delay(5000L)
-            //      val recordingFile = File(context.filesDir, recordingFileName)
-            //      recordingFile.renameTo(File(context.filesDir,"voicememo_${timestamp}_$duration.pcm"))
         }
     }
 
+    private fun sendFileAsAsset(file: File, dataClient: DataClient) {
+        val asset: Asset = Asset.createFromBytes(file.readBytes())
+        val dataMap: PutDataMapRequest = PutDataMapRequest.create("/audio")
+        dataMap.dataMap.putAsset("audioAsset", asset)
+        val request: PutDataRequest = dataMap.asPutDataRequest()
+        dataClient.putDataItem(request)
+    }
+
+    private fun generateFileName(): String {
+        val timestamp = System.currentTimeMillis()
+        return "loggy_$timestamp.pcm"
+    }
 
     companion object {
         const val RECORDING_RATE = 16000 // can go up to 44K, if needed
         const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
-        const val CHANNELS_OUT = AudioFormat.CHANNEL_OUT_MONO
         const val FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        const val MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 // 10 MB
     }
-
-
 }

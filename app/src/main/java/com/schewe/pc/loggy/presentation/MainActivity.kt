@@ -42,7 +42,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var recordingServiceManager: RecordingServiceManager
     private val recordingService: RecordingService?
         get() = recordingServiceManager.recordingServiceFlow.value
-    private val permissions = arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.FOREGROUND_SERVICE, Manifest.permission.POST_NOTIFICATIONS)
+    private val permissions = arrayOf(
+        Manifest.permission.RECORD_AUDIO,
+        Manifest.permission.FOREGROUND_SERVICE,
+        Manifest.permission.POST_NOTIFICATIONS,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
