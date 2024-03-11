@@ -81,6 +81,7 @@ class AudioController(val context: Context) {
         dataMap.dataMap.putAsset("audioAsset", asset)
         val request: PutDataRequest = dataMap.asPutDataRequest()
         dataClient.putDataItem(request)
+        file.delete()
     }
 
     private fun generateFileName(): String {
@@ -92,6 +93,6 @@ class AudioController(val context: Context) {
         const val RECORDING_RATE = 16000 // can go up to 44K, if needed
         const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         const val FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        const val MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 // 10 MB
+        const val MAX_FILE_SIZE_BYTES = 50 * 1024 // 50 KB
     }
 }
