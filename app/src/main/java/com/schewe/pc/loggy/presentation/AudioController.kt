@@ -2,97 +2,139 @@ package com.schewe.pc.loggy.presentation
 
 import android.Manifest
 import android.content.Context
-import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.util.Log
 import androidx.annotation.RequiresPermission
-import com.google.android.gms.wearable.Asset
-import com.google.android.gms.wearable.DataClient
-import com.google.android.gms.wearable.PutDataMapRequest
-import com.google.android.gms.wearable.PutDataRequest
+import com.google.android.gms.tasks.Tasks
+import com.google.android.gms.wearable.ChannelClient
+import com.google.android.gms.wearable.Node
 import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.OutputStream
+import java.io.ByteArrayOutputStream
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
+class AudioController(private val context: Context) {
+    companion object {
+        const val RECORDING_RATE = 16000
+        const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
+        const val FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        const val CHANNEL_PATH = "/audioChannel"
+    }
 
-class AudioController(val context: Context) {
-    // https://github.com/android/wear-os-samples/blob/main/WearSpeakerSample/wear/src/main/java/com/example/android/wearable/speaker/SoundRecorder.kt
-    @RequiresPermission(allOf = [Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION])
-    suspend fun record(filenameCallback: (String) -> Unit) {
-        val intSize = AudioRecord.getMinBufferSize(RECORDING_RATE, CHANNEL_IN, FORMAT)
-        val audioRecord =
-            AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.MIC).setAudioFormat(
-                AudioFormat.Builder().setSampleRate(RECORDING_RATE).setChannelMask(CHANNEL_IN)
-                    .setEncoding(FORMAT).build()
-            ).setBufferSizeInBytes(intSize * 3).build()
-
-        val dataClient: DataClient = Wearable.getDataClient(context)
-
-        var dataChunkFile = File(context.filesDir, generateFileName())
-        // Initialize the fileOutputStream before entering the loop
-        var fileOutputStream: OutputStream? = dataChunkFile.outputStream()
-
-        filenameCallback(dataChunkFile.name)
-
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
+    suspend fun record() {
+        val bufferSize = AudioRecord.getMinBufferSize(RECORDING_RATE, CHANNEL_IN, FORMAT) * 3
+        val audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, RECORDING_RATE, CHANNEL_IN, FORMAT, bufferSize)
         audioRecord.startRecording()
 
+        val channel = withContext(Dispatchers.IO) { openAudioChannel() }
+        if (channel == null) {
+            Log.e("AudioController", "Failed to open audio channel")
+            return
+        }
+
+        val channelClient = Wearable.getChannelClient(context)
+        val outputStream = withContext(Dispatchers.IO) { Tasks.await(channelClient.getOutputStream(channel)) }
+
         try {
-            withContext(Dispatchers.IO) {
-                val buffer = ByteArray(intSize)
+            val sendThreshold = 1024 * 1024 // 1MB
+            val dataBuffer = ByteArrayOutputStream()
 
-                // Loop until coroutine is cancelled
-                while (isActive) {
-                    val read = audioRecord.read(buffer, 0, buffer.size)
+            outputStream.use { output ->
+                val data = ByteArray(bufferSize)
+                withContext(Dispatchers.IO) {
+                    while (audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        val read = audioRecord.read(data, 0, data.size)
 
-                    // Check if adding more data exceeds the maximum size
-                    if (dataChunkFile.length() + read > MAX_FILE_SIZE_BYTES) {
-                        // If it does, close the current file, send it and start a new one
-                        fileOutputStream?.close()
+                        if (read > 0) {
+                            dataBuffer.write(data, 0, read)
+                        }
 
-                        sendFileAsAsset(dataChunkFile, dataClient)
-
-                        dataChunkFile = File(context.filesDir, generateFileName())
-                        fileOutputStream = dataChunkFile.outputStream() // open new output stream
-                        filenameCallback(dataChunkFile.name)
+                        // Wenn die Puffergröße größer/gleich 1MB ist, verschicken Sie die Daten
+                        if (dataBuffer.size() >= sendThreshold) {
+                            Log.d("AudioController", "Send")
+                            output.write(dataBuffer.toByteArray())
+                            dataBuffer.reset()
+                        }
                     }
-
-                    // Write audio data to the file
-                    fileOutputStream?.write(buffer, 0, read)
                 }
 
-                // Don't forget to close and send the last piece of data that didn't reach the maximum size
-                fileOutputStream?.close()
-                sendFileAsAsset(dataChunkFile, dataClient)
-
+                // Senden Sie die restlichen Daten, wenn die Aufnahme gestoppt wird
+                if (dataBuffer.size() > 0) {
+                    withContext(Dispatchers.IO) {
+                        output.write(dataBuffer.toByteArray())
+                    }
+                    dataBuffer.reset()
+                }
             }
         } finally {
+            audioRecord.stop()
             audioRecord.release()
         }
     }
 
-    private fun sendFileAsAsset(file: File, dataClient: DataClient) {
-        val asset: Asset = Asset.createFromBytes(file.readBytes())
-        val dataMap: PutDataMapRequest = PutDataMapRequest.create("/audio")
-        dataMap.dataMap.putAsset("audioAsset", asset)
-        val request: PutDataRequest = dataMap.asPutDataRequest()
-        dataClient.putDataItem(request)
-        file.delete()
+    private suspend fun openAudioChannel(): ChannelClient.Channel? {
+        val nodes = suspendCoroutine<Result<MutableList<Node>>> { continuation ->
+            Wearable.getNodeClient(context.applicationContext).connectedNodes
+                .addOnSuccessListener {
+                    continuation.resume(Result.success(it))
+                }
+                .addOnFailureListener {
+                    continuation.resume(Result.failure(it))
+                }
+        }
+
+        val node = nodes.getOrNull()?.firstOrNull()
+
+        return node?.let {
+            val channelClient = Wearable.getChannelClient(context)
+            val openChannelTask = suspendCoroutine<Result<ChannelClient.Channel>> { continuation ->
+                channelClient.openChannel(it.id, CHANNEL_PATH)
+                    .addOnSuccessListener { channel ->
+                        continuation.resume(Result.success(channel))
+                    }
+                    .addOnFailureListener { error ->
+                        continuation.resume(Result.failure(error))
+                    }
+            }
+
+            return openChannelTask.getOrNull()
+        }
     }
 
-    private fun generateFileName(): String {
-        val timestamp = System.currentTimeMillis()
-        return "loggy_$timestamp.pcm"
-    }
+    private suspend fun sendAudioData(audioData: ByteArray) {
+        Log.d("X", "Send audio data")
+        val nodes = suspendCoroutine<Result<MutableList<Node>>> { continuation ->
+            Wearable.getNodeClient(context.applicationContext).connectedNodes
+                .addOnSuccessListener {
+                    continuation.resume(Result.success(it))
+                }
+                .addOnFailureListener {
+                    continuation.resume(Result.failure(it))
+                }
+        }
+        Log.d("X", "Found connected node")
 
-    companion object {
-        const val RECORDING_RATE = 16000 // can go up to 44K, if needed
-        const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
-        const val FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        const val MAX_FILE_SIZE_BYTES = 50 * 1024 // 50 KB
+        val node = nodes.getOrNull()?.firstOrNull()
+
+        Log.d("X", "node $node")
+
+        node?.let {
+            val channelClient = Wearable.getChannelClient(context)
+            val openChannelTask = channelClient.openChannel(it.id, CHANNEL_PATH)
+
+            openChannelTask.addOnSuccessListener { channel ->
+                val outputStreamTask = channelClient.getOutputStream(channel)
+                outputStreamTask.addOnSuccessListener { outputStream ->
+                    outputStream.use { it.write(audioData) }
+                }
+            }
+        }
     }
 }

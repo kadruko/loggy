@@ -24,7 +24,6 @@ class RecordingService : LifecycleService() {
     private val localBinder = LocalBinder()
     private lateinit var audioController: AudioController
     private var recordingJob: Job? = null
-    private var filename: String? = null
 
     inner class LocalBinder : Binder() {
         internal val recordingService: RecordingService
@@ -56,7 +55,7 @@ class RecordingService : LifecycleService() {
 
         // do i need to change dispatcher?
         recordingJob = lifecycleScope.launch {
-            audioController.record { filename = it }
+            audioController.record()
         }
     }
 
@@ -64,7 +63,7 @@ class RecordingService : LifecycleService() {
         Log.d("X","stopRecording")
         recordingJob?.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
-        return filename
+        return ""
     }
 
     private fun generateNotification(): Notification {
