@@ -20,6 +20,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.util.Date
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -74,6 +75,7 @@ class AudioController(private val context: Context) {
         // Erstelle DataMap, das die Audiodaten enthält
         val dataMap = DataMap().apply {
             putByteArray("audio_data", audioData)
+            putLong("timestamp", Date().time)
         }
 
         // Erstelle eine Anforderung zur Platzierung eines DataItem mit eindeutigem Pfad in der Data Layer
