@@ -19,6 +19,7 @@ import com.schewe.pc.loggy.R
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import androidx.wear.ongoing.Status
+import kotlinx.coroutines.Dispatchers
 
 class RecordingService : LifecycleService() {
     private val localBinder = LocalBinder()
@@ -53,8 +54,7 @@ class RecordingService : LifecycleService() {
         startService(Intent(applicationContext, RecordingService::class.java))
         startForeground(1, notification)
 
-        // do i need to change dispatcher?
-        recordingJob = lifecycleScope.launch {
+        recordingJob = lifecycleScope.launch(Dispatchers.IO) {
             audioController.record()
         }
     }

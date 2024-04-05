@@ -65,6 +65,7 @@ class AudioController(private val context: Context) {
     }
 
     private fun convertToMp3(audioData: ByteArray): ByteArray {
+        Log.d("X", "Convert to mp3")
         val pcmFile = File(context.cacheDir, "audio.pcm")
         pcmFile.writeBytes(audioData)
         val mp3File = File(context.cacheDir, "audio.mp3")
